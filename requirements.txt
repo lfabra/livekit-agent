@@ -1,0 +1,76 @@
+# ============================================
+# LIVEKIT ROLEPLAY AGENT - REALTIME API + BVC
+# ============================================
+# Versão 5.4 - OpenAI Realtime API + BVC
+# ============================================
+
+# LiveKit Agent SDK com plugins necessários
+# Inclui: openai (com realtime), silero (VAD fallback)
+livekit-agents[openai,silero]>=1.0.0
+
+# 🔇 NOVO: Plugin de Noise Cancellation (Krisp)
+# BVC = Background Voice Cancellation
+# - Remove ruídos de fundo
+# - Remove vozes secundárias (outras pessoas)
+# - Isola apenas a voz principal
+livekit-plugins-noise-cancellation~=0.2
+
+# Utilitários
+python-dotenv>=1.0.0
+aiohttp>=3.9.0
+
+# Cliente OpenAI (para avaliação com GPT-4)
+openai>=1.0.0
+
+# ============================================
+# NOTAS DE INSTALAÇÃO:
+# ============================================
+#
+# 1. Criar ambiente virtual:
+#    python3.12 -m venv venv
+#    source venv/bin/activate
+#
+# 2. Instalar dependências:
+#    pip install -r requirements_realtime_v5_4.txt
+#
+# 3. ⚠️  IMPORTANTE: Baixar modelos do BVC:
+#    python agent_realtime_v5_4.py download-files
+#
+# 4. Executar agent:
+#    python agent_realtime_v5_4.py dev
+#
+# ============================================
+# VARIÁVEIS DE AMBIENTE NECESSÁRIAS (.env):
+# ============================================
+#
+# LIVEKIT_URL=wss://seu-projeto.livekit.cloud
+# LIVEKIT_API_KEY=sua-api-key
+# LIVEKIT_API_SECRET=seu-api-secret
+# OPENAI_API_KEY=sua-openai-api-key
+# LOG_LEVEL=INFO
+#
+# # Gravação (opcional)
+# RECORDING_ENABLED=true
+# AWS_BUCKET_NAME=seu-bucket
+# AWS_REGION=us-east-1
+# AWS_ACCESS_KEY_ID=sua-key
+# AWS_SECRET_ACCESS_KEY=sua-secret
+# RECORDING_PATH_PREFIX=roleplays/recordings
+#
+# # Noise Cancellation (opcional, default=true)
+# NOISE_CANCELLATION_ENABLED=true
+#
+# ============================================
+# REQUISITOS IMPORTANTES:
+# ============================================
+#
+# 1. LiveKit Cloud é OBRIGATÓRIO para BVC
+#    (não funciona com self-hosted)
+#
+# 2. NÃO habilite Krisp no frontend se usar
+#    BVC no agent (escolha um ou outro)
+#
+# 3. Modelos rodam localmente, áudio não é
+#    enviado para servidores Krisp
+#
+# ============================================
