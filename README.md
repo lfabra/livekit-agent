@@ -1,195 +1,108 @@
-# 🎭 LiveKit Roleplay Agent
+# LiveKit Roleplay Agent
 
-Agente de simulação de vendas por voz usando LiveKit e OpenAI para treinamento de equipes comerciais.
-
-## 📋 Visão Geral
-
-Este projeto implementa um agente de IA que simula clientes em cenários de vendas, permitindo que colaboradores pratiquem suas habilidades de negociação com feedback e avaliação automática.
-
-### Características Principais
-
-- ✅ **Simulação por Voz** - Conversas em tempo real com IA
-- ✅ **Transcrição Automática** - Captura de toda a conversa
-- ✅ **Avaliação Inteligente** - Feedback baseado em critérios configuráveis
-- ✅ **Encerramento Automático** - IA detecta fim natural da conversa
-- ✅ **VAD Otimizado** - Detecção de voz ajustada para evitar ruídos
-- ✅ **Gravação de Áudio** - Salvamento automático no S3 via LiveKit Egress
-- ✅ **BVC Noise Cancellation** - Remove ruídos e vozes secundárias (reuniões)
+Agente de IA que simula clientes em cenários de roleplay (vendas, suporte, etc.) usando comunicacao por voz em tempo real.
 
 ---
 
-## 📁 Estrutura de Arquivos
+## Como funciona
+
+Este agent **NAO e um servidor HTTP**. Ele e um **worker do LiveKit** que se conecta ao LiveKit Cloud e fica "ouvindo" por novas rooms.
+
+A arquitetura e totalmente **desacoplada**:
 
 ```
-livekit-agent/
-├── agent.py                      # Agente original (STT + LLM + TTS separados)
-├── agent_realtime.py             # Agente com OpenAI Realtime API
-├── agent_realtime_v5_3.py        # v5.3 - Com gravação de áudio (Egress → S3)
-├── agent_realtime_v5_4.py        # v5.4 - Com BVC Noise Cancellation (RECOMENDADO)
-├── requirements.txt              # Dependências do agent.py
-├── requirements_realtime.txt     # Dependências do agent_realtime.py
-├── requirements_realtime_v5_4.txt # Dependências v5.4 (com noise cancellation)
-├── .env                          # Variáveis de ambiente
-└── README.md                     # Este arquivo
+┌─────────────────┐         ┌──────────────────┐         ┌─────────────────┐
+│   Browser        │◄──wss──►│   LiveKit Cloud   │◄──wss──►│   agent.py      │
+│   (usuario)      │         │ (servidor midia)  │         │   (Amazon AWS)  │
+└─────────────────┘         └──────────────────┘         └────────┬────────┘
+                                    │                             │
+                                    │                             ▼
+                                    │                     ┌───────────────┐
+                                    │                     │  OpenAI API   │
+                                    │                     │  (Realtime)   │
+                                    │                     └───────────────┘
+                                    ▼
+                            ┌──────────────────┐
+┌─────────────────┐         │   Egress API     │
+│   PHP Backend    │         │   (Gravacao)     │
+│   (Zend)         │         └────────┬─────────┘
+└────────┬────────┘                  │
+         │                           ▼
+         ▼                   ┌──────────────────┐
+┌─────────────────┐          │    AWS S3        │
+│   PostgreSQL     │          │   (Gravacoes)    │
+│   (roleplay.*)   │          └──────────────────┘
+└─────────────────┘
+```
+
+### Fluxo passo a passo
+
+1. O **PHP** (backend) cria uma room no LiveKit Cloud com metadata (prompt, persona, voz, criterios)
+2. O **agent.py** (rodando na Amazon) detecta a nova room automaticamente e entra como participante
+3. O **browser** do usuario tambem conecta na mesma room via WebSocket
+4. Quando o usuario clica "Iniciar Chamada", o frontend envia `start_simulation` via DataChannel
+5. O agent inicia a gravacao, fala a saudacao ("Alo?") e comeca a conversa
+6. O agent usa a **OpenAI Realtime API** (Speech-to-Speech) para ouvir e responder em tempo real
+7. Ao encerrar, o agent para a gravacao (salva no S3) e gera uma avaliacao automatica via GPT-4o
+
+### Ponto importante
+
+O **PHP backend NAO sabe onde o agent esta rodando**. Ele so cria a room no LiveKit Cloud. O agent se registra sozinho como worker e entra nas rooms automaticamente. Por isso:
+
+- Se o agent estiver **desligado**, a ligacao nao funciona (o usuario fica falando sozinho, ninguem "atende")
+- Se o agent estiver **ligado** (na Amazon, na sua maquina local, ou em qualquer lugar), ele entra automaticamente
+- **NAO existe configuracao no PHP apontando pro agent** — a conexao e feita pelo proprio agent ao LiveKit Cloud
+
+---
+
+## Estrutura de arquivos
+
+```
+roleplays-livekit-server/
+├── agent.py               # Agente principal (OpenAI Realtime API + BVC + Gravacao)
+├── requirements.txt       # Dependencias Python
+├── .env                   # Variaveis de ambiente (NAO committar)
+├── env.example            # Exemplo de .env
+└── README.md              # Este arquivo
 ```
 
 ---
 
-## 🚀 Versões do Agente
+## Funcionalidades
 
-### `agent_realtime_v5_4.py` (v5.4) - **RECOMENDADO** ⭐
-
-Usa a **OpenAI Realtime API** com **BVC (Background Voice Cancellation)** e **gravação de áudio**.
-
-**Novidades da v5.4:**
-- 🔇 **BVC Noise Cancellation** - Remove vozes secundárias e ruídos de fundo
-- 🎬 **Gravação de Áudio** - Salva automaticamente no S3 via LiveKit Egress
-- 🎯 Ideal para ambientes com múltiplas pessoas (reuniões, escritórios)
-
-**Vantagens:**
-- ⚡ Menor latência (~300-800ms)
-- 🎯 Conversas mais naturais e fluidas
-- 🔊 Qualidade de voz superior
-- 🛡️ VAD menos sensível a ruídos externos
-- 🔇 Isola apenas a voz principal do usuário
-- 🎬 Gravações disponíveis para revisão posterior
-
-### `agent_realtime_v5_3.py` (v5.3)
-
-Versão com gravação de áudio, mas **sem** BVC noise cancellation.
-
-**Quando usar:**
-- Se não precisar de cancelamento de ruído avançado
-- Para ambientes silenciosos
-
-### `agent.py` (Original)
-
-Usa pipeline tradicional: STT → LLM → TTS (componentes separados).
-
-**Quando usar:**
-- Se precisar de mais controle sobre cada etapa
-- Se tiver problemas com a Realtime API
-- Para debug/comparação
+- **Simulacao por voz** — conversas em tempo real com IA via OpenAI Realtime API (~300-800ms de latencia)
+- **Transcricao automatica** — captura de toda a conversa em tempo real
+- **Avaliacao inteligente** — feedback automatico baseado em criterios configuraveis (GPT-4o)
+- **Encerramento automatico** — a IA detecta o fim natural da conversa e encerra
+- **Gravacao de audio** — salva automaticamente no AWS S3 via LiveKit Egress
+- **BVC Noise Cancellation** — remove ruidos de fundo e vozes secundarias (Krisp)
 
 ---
 
-## 🔇 BVC - Background Voice Cancellation
+## BVC - Background Voice Cancellation
 
-O BVC (powered by Krisp) é um recurso avançado de cancelamento de ruído que:
+O BVC (powered by Krisp) e um recurso de cancelamento de ruido que roda **localmente** no agent:
 
-| Remove | Mantém |
-|--------|--------|
-| ❌ Ruídos de fundo (tráfego, ventilador, música) | ✅ Voz principal do microfone |
-| ❌ Vozes de outras pessoas na sala/reunião | |
-| ❌ TV/Rádio de fundo | |
-| ❌ Barulhos de teclado, cliques | |
+| Remove                                              | Mantem                          |
+|-----------------------------------------------------|---------------------------------|
+| Ruidos de fundo (trafego, ventilador, musica)       | Voz principal do microfone      |
+| Vozes de outras pessoas na sala/reuniao             |                                 |
+| TV/Radio de fundo                                   |                                 |
+| Barulhos de teclado, cliques                        |                                 |
 
-### Requisitos do BVC
-
-- ⚠️ **Requer LiveKit Cloud** (não funciona em self-hosted)
-- ⚠️ **NÃO habilite Krisp no frontend** se usar BVC no agent
-- ✅ Modelos rodam **localmente** - áudio não é enviado para Krisp
-
-### Configuração no Agent
-
-```python
-from livekit.plugins import noise_cancellation
-from livekit.agents import room_io
-
-await session.start(
-    room=ctx.room, 
-    agent=agent,
-    room_options=room_io.RoomOptions(
-        audio_input=room_io.AudioInputOptions(
-            noise_cancellation=noise_cancellation.BVC(),  # ← Background Voice Cancellation
-        ),
-    ),
-)
-```
-
-### Modelos Disponíveis
-
-| Modelo | Uso | Descrição |
-|--------|-----|-----------|
-| `BVC()` | **Reuniões/Escritório** | Remove vozes + ruídos (RECOMENDADO) |
-| `NC()` | Ambientes silenciosos | Remove apenas ruídos, mantém vozes |
-| `BVCTelephony()` | Chamadas SIP/Telefonia | Otimizado para telefonia |
+**Requisitos:**
+- Requer **LiveKit Cloud** (nao funciona em self-hosted)
+- NAO habilite Krisp no frontend se usar BVC no agent
+- Modelos rodam localmente, audio nao e enviado para servidores Krisp
 
 ---
 
-## 🎬 Gravação de Áudio (Egress → S3)
+## Configuracao
 
-A partir da v5.3, o agent grava automaticamente as conversas e salva no AWS S3.
+### Variaveis de ambiente (.env)
 
-### Configuração
-
-```bash
-# .env
-RECORDING_ENABLED=true
-AWS_BUCKET_NAME=seu-bucket
-AWS_REGION=us-east-1
-AWS_ACCESS_KEY_ID=sua-key
-AWS_SECRET_ACCESS_KEY=sua-secret
-RECORDING_PATH_PREFIX=roleplays/recordings
-```
-
-### Estrutura no S3
-
-```
-s3://seu-bucket/
-└── roleplays/
-    └── recordings/
-        └── {customer_id}/
-            └── {session_id}_{timestamp}.mp4
-```
-
-### Fluxo de Gravação
-
-1. Usuário clica "Iniciar Chamada"
-2. Agent recebe comando `start_simulation`
-3. Gravação inicia via LiveKit Egress API
-4. Saudação é falada
-5. Conversa acontece normalmente
-6. Simulação encerra (usuário ou IA)
-7. Gravação é finalizada e enviada ao S3
-8. URL do arquivo é incluída na avaliação
-
----
-
-## 📦 Instalação
-
-### 1. Criar ambiente virtual (recomendado)
-
-```bash
-cd /usr/local/var/www/roleplays/livekit-agent
-python3.12 -m venv venv
-source venv/bin/activate
-```
-
-### 1.1 Para desativar
-
-```bash
-deactivate
-```
-
-### 2. Instalar dependências
-
-**Para v5.4 (RECOMENDADO):**
-```bash
-pip install -r requirements.txt
-```
-### 3. Baixar modelos do BVC (IMPORTANTE!)
-
-```bash
-python agent.py download-files
-```
-
-### 4. Configurar variáveis de ambiente
-
-Crie um arquivo `.env`:
-
-```bash
-# LiveKit
+```env
+# LiveKit Cloud
 LIVEKIT_URL=wss://seu-projeto.livekit.cloud
 LIVEKIT_API_KEY=sua-api-key
 LIVEKIT_API_SECRET=seu-api-secret
@@ -197,7 +110,7 @@ LIVEKIT_API_SECRET=seu-api-secret
 # OpenAI
 OPENAI_API_KEY=sua-openai-key
 
-# Gravação (opcional)
+# Gravacao de audio (opcional)
 RECORDING_ENABLED=true
 AWS_BUCKET_NAME=seu-bucket
 AWS_REGION=us-east-1
@@ -212,280 +125,316 @@ NOISE_CANCELLATION_ENABLED=true
 LOG_LEVEL=INFO
 ```
 
+### Vozes disponiveis (Realtime API)
+
+| Voz       | Descricao            |
+|-----------|----------------------|
+| `alloy`   | Neutra, versatil     |
+| `ash`     | Suave, natural       |
+| `ballad`  | Expressiva           |
+| `coral`   | Amigavel             |
+| `echo`    | Neutra masculina     |
+| `sage`    | Calma, profissional  |
+| `shimmer` | Brilhante, otimista  |
+| `verse`   | Dinamica             |
+| `marin`   | Nova voz             |
+| `cedar`   | Nova voz             |
+
+### Parametros VAD (Voice Activity Detection)
+
+| Parametro              | Valor | Descricao                                 |
+|------------------------|-------|-------------------------------------------|
+| `threshold`            | 0.7   | Sensibilidade (0.0-1.0, maior = menos sensivel) |
+| `silence_duration_ms`  | 800   | Silencio antes de processar               |
+| `prefix_padding_ms`    | 400   | Buffer antes da deteccao                  |
+| `interrupt_response`   | false | Permitir interrupcoes                     |
+
 ---
 
-## ▶️ Executando
+## Comunicacao Agent <-> Frontend
 
-### Modo Desenvolvimento (com reload automático)
+### Agent envia para o Frontend (via DataChannel)
+
+```json
+// Transcricao em tempo real
+{ "type": "transcription", "role": "user|ai", "text": "..." }
+
+// Avaliacao final (com info da gravacao)
+{ "type": "evaluation", "data": { "overall_score": 8, "..." }, "recording": { "s3_url": "..." } }
+
+// Erro na avaliacao
+{ "type": "evaluation_error", "message": "..." }
+
+// Encerramento automatico pela IA
+{ "type": "auto_end_simulation", "reason": "ai_ended" }
+
+// Status do agent
+{ "type": "agent_speaking" }
+{ "type": "agent_listening" }
+
+// Gravacao pronta
+{ "type": "recording_ready", "s3_url": "...", "egress_id": "...", "filepath": "..." }
+```
+
+### Frontend envia para o Agent (via DataChannel)
+
+```json
+// Iniciar simulacao (tambem inicia gravacao)
+{ "type": "start_simulation" }
+
+// Encerrar simulacao (para gravacao e gera avaliacao)
+{ "type": "end_simulation" }
+```
+
+---
+
+## Deploy em producao (AWS Lightsail / Ubuntu)
+
+### Requisitos do servidor
+
+- 2 vCPU
+- 4 GB RAM (8 GB recomendado)
+- Ubuntu 22.04 LTS
+- O agent NAO expoe portas publicas (conexao e outbound via WebSocket)
+
+### 1. Preparar o sistema
 
 ```bash
+sudo apt update && sudo apt -y upgrade
+sudo apt -y install git curl unzip build-essential
+```
+
+Swap (opcional, recomendado para 4GB RAM):
+
+```bash
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+### 2. Instalar Python 3.12
+
+```bash
+sudo apt -y install software-properties-common
+sudo add-apt-repository ppa:deadsnakes/ppa -y
+sudo apt update
+sudo apt -y install python3.12 python3.12-venv python3.12-dev
+```
+
+### 3. Clonar o projeto
+
+```bash
+sudo mkdir -p /opt/roleplays
+sudo chown -R $USER:$USER /opt/roleplays
+cd /opt/roleplays
+git clone git@github.com:lfabra/livekit-agent.git
+cd livekit-agent
+```
+
+### 4. Criar ambiente virtual e instalar dependencias
+
+```bash
+python3.12 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 5. Baixar modelos do BVC (OBRIGATORIO na primeira vez)
+
+```bash
+source venv/bin/activate
+python agent.py download-files
+```
+
+Esse comando baixa os modelos de machine learning do Krisp para o cancelamento de ruido. So precisa rodar **uma vez** (ou quando atualizar a versao do plugin `livekit-plugins-noise-cancellation`).
+
+### 6. Configurar .env
+
+```bash
+cp env.example .env
+nano .env
+# Preencher com as credenciais reais
+chmod 600 .env
+```
+
+### 7. Testar manualmente
+
+```bash
+source venv/bin/activate
 python agent.py dev
 ```
 
-### Modo Produção
+Se aparecer "PRONTO - Aguardando comando 'start_simulation'", esta funcionando.
+
+### 8. Criar servico systemd (producao)
 
 ```bash
-python agent.py start
+sudo nano /etc/systemd/system/livekit-agent.service
 ```
 
-### Com PM2 (recomendado para produção)
+Conteudo:
+
+```ini
+[Unit]
+Description=LiveKit Roleplays Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/roleplays/livekit-agent
+EnvironmentFile=/opt/roleplays/livekit-agent/.env
+ExecStart=/opt/roleplays/livekit-agent/venv/bin/python agent.py start
+Restart=always
+RestartSec=3
+User=ubuntu
+Group=ubuntu
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 9. Ativar o servico
 
 ```bash
-# Iniciar
-pm2 start agent.py --name livekit-agent --interpreter python
-
-# Ver logs
-pm2 logs livekit-agent
-
-# Reiniciar após atualização
-pm2 restart livekit-agent
-
-# Status
-pm2 status
+sudo systemctl daemon-reload
+sudo systemctl enable livekit-agent
+sudo systemctl start livekit-agent
 ```
 
 ---
 
-## 🔧 Configuração
+## Comandos do dia a dia
 
-### Vozes Disponíveis (Realtime API)
+### Gerenciar o servico
 
-| Voz | Descrição |
-|-----|-----------|
-| `alloy` | Neutra, versátil |
-| `ash` | Suave, natural |
-| `ballad` | Expressiva |
-| `coral` | Amigável |
-| `echo` | Neutra masculina |
-| `sage` | Calma, profissional |
-| `shimmer` | Brilhante, otimista |
-| `verse` | Dinâmica |
-| `marin` | Nova voz |
-| `cedar` | Nova voz |
+```bash
+# Ver status (se esta rodando)
+sudo systemctl status livekit-agent
 
-### Parâmetros VAD
+# Desligar
+sudo systemctl stop livekit-agent
 
-| Parâmetro | Valor | Descrição |
-|-----------|-------|-----------|
-| `threshold` | 0.7 | Sensibilidade (0.0-1.0, maior = menos sensível) |
-| `silence_duration_ms` | 800 | Silêncio antes de processar |
-| `prefix_padding_ms` | 400 | Buffer antes da detecção |
-| `interrupt_response` | false | Permitir interrupções |
+# Ligar
+sudo systemctl start livekit-agent
 
-**Configuração v5.4:**
-```python
-turn_detection=TurnDetection(
-    type="server_vad",
-    threshold=0.7,              # Menos sensível a ruídos
-    prefix_padding_ms=400,      # Buffer de áudio
-    silence_duration_ms=800,    # Espera mais silêncio
-    create_response=True,
-    interrupt_response=False,   # IA não é interrompida
-)
+# Reiniciar (desliga e liga)
+sudo systemctl restart livekit-agent
+```
+
+**Nota:** com `Restart=always` no systemd, se o processo crashar ele reinicia sozinho. Mas se voce der `stop` manual, ele respeita e fica parado.
+
+### Ver logs
+
+```bash
+# Logs em tempo real
+sudo journalctl -u livekit-agent -f
+
+# Ultimas 100 linhas
+sudo journalctl -u livekit-agent -n 100
+
+# Logs de hoje
+sudo journalctl -u livekit-agent --since today
+```
+
+### Atualizar o codigo
+
+```bash
+cd /opt/roleplays/livekit-agent
+git pull
+source venv/bin/activate
+pip install -r requirements.txt
+sudo systemctl restart livekit-agent
 ```
 
 ---
 
-## 📡 Comunicação com Frontend
+## Troubleshooting
 
-### Eventos enviados pelo Agent → Frontend
+### A ligacao nao funciona (usuario fala sozinho)
 
-```javascript
-// Transcrição em tempo real
-{ type: "transcription", role: "user"|"ai", text: "..." }
+O agent esta desligado. Verifique:
 
-// Avaliação final (com info da gravação)
-{ 
-  type: "evaluation", 
-  data: { overall_score, strengths, weaknesses, ... },
-  recording: { egress_id, filepath, s3_url }  // NOVO v5.3+
-}
-
-// Erro na avaliação
-{ type: "evaluation_error", message: "..." }
-
-// Encerramento automático pela IA
-{ type: "auto_end_simulation", reason: "ai_ended" }
-
-// Status do agent
-{ type: "agent_speaking" }
-{ type: "agent_listening" }
+```bash
+sudo systemctl status livekit-agent
 ```
 
-### Comandos Frontend → Agent
+Se estiver `inactive`, ligue com `sudo systemctl start livekit-agent`.
 
-```javascript
-// Iniciar simulação (também inicia gravação)
-{ type: "start_simulation" }
+### VAD muito sensivel (capta ruidos)
 
-// Encerrar simulação (para gravação e gera avaliação)
-{ type: "end_simulation" }
+1. Ative o BVC no `.env`: `NOISE_CANCELLATION_ENABLED=true`
+2. Ou ajuste os parametros no `agent.py`: aumente `threshold` e `silence_duration_ms`
+
+### IA nao fala a saudacao inicial
+
+Verifique nos logs se o agent esta recebendo o comando `start_simulation`:
+
+```bash
+sudo journalctl -u livekit-agent -f
 ```
 
----
+### BVC nao funciona
 
-## 🔍 Troubleshooting
-
-### VAD muito sensível (capta ruídos externos)
-
-1. **Ative o BVC** (v5.4) - resolve a maioria dos casos
-2. Ou aumente o `threshold` e `silence_duration_ms`:
-```python
-threshold=0.8,              # Ainda menos sensível
-silence_duration_ms=1000,   # Espera mais silêncio
-```
-
-### IA não fala a saudação inicial
-
-Verifique se a função `generate_reply()` está sendo usada (não `say()`):
-```python
-await session.generate_reply(
-    instructions=f"Você está atendendo uma ligação. Diga EXATAMENTE: \"{greeting}\""
-)
-```
-
-### Erro "ServerVadOptions not found"
-
-Use `TurnDetection` do pacote OpenAI:
-```python
-from openai.types.beta.realtime.session import TurnDetection
-```
-
-### BVC não funciona
-
-1. Verifique se está usando **LiveKit Cloud** (não self-hosted)
-2. Execute `python agent_realtime_v5_4.py download-files` para baixar os modelos
+1. Verifique se esta usando **LiveKit Cloud** (nao funciona em self-hosted)
+2. Execute `python agent.py download-files` para baixar os modelos
 3. Verifique se `NOISE_CANCELLATION_ENABLED=true` no `.env`
 
-### Gravação não funciona
+### Gravacao nao funciona
 
 1. Verifique as credenciais AWS no `.env`
-2. Verifique se o bucket existe e tem permissões corretas
+2. Verifique se o bucket existe e tem permissoes corretas
 3. Verifique se `RECORDING_ENABLED=true`
-4. Olhe os logs para mensagens de erro
-
-### Transcrições duplicadas
-
-O agente v5.4 já tem proteção contra duplicação nos callbacks. Verifique se está usando a versão mais recente.
 
 ---
 
-## 📊 Logs
+## Gravacao de audio (Egress -> S3)
 
-O agente usa emojis para facilitar a leitura dos logs:
+O agent grava automaticamente as conversas e salva no AWS S3.
 
-| Emoji | Significado |
-|-------|-------------|
-| 🚀 | Inicialização |
-| ✅ | Sucesso |
-| 📞 | Saudação |
-| 👤 | Fala do usuário |
-| 🤖 | Fala da IA |
-| 🏁 | Encerramento |
-| 📊 | Avaliação |
-| 🎬 | Gravação iniciada |
-| 🛑 | Gravação parada |
-| 🔇 | Noise Cancellation |
-| ⚠️ | Aviso |
-| ❌ | Erro |
-
----
-
-## 📝 Histórico de Versões
-
-### v5.4 (Atual) ⭐
-- 🔇 **BVC Noise Cancellation** - Remove vozes secundárias e ruídos
-- Ideal para ambientes com múltiplas pessoas
-- Mantém todas as features da v5.3
-
-### v5.3
-- 🎬 **Gravação de Áudio** via LiveKit Egress → AWS S3
-- URL da gravação incluída na avaliação
-- Estrutura organizada por customer/session
-
-### v5.2
-- VAD menos sensível (`threshold=0.7`, `interrupt_response=false`)
-- Correção da saudação inicial
-- Deduplicação de mensagens melhorada
-
-### v5.1
-- Correção do `TurnDetection` (API atualizada)
-- Migração de `ServerVadOptions` para `TurnDetection`
-
-### v5.0
-- Implementação inicial com OpenAI Realtime API
-- Encerramento automático pela IA
-- Transcrição em tempo real
-
----
-
-## 🏗️ Arquitetura
+### Estrutura no S3
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Frontend      │────▶│    LiveKit      │────▶│   Agent v5.4    │
-│   (Browser)     │◀────│    Cloud        │◀────│   (Python)      │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-        │                       │                       │
-        │                       │                       ▼
-        │                       │               ┌─────────────────┐
-        │                       │               │   OpenAI API    │
-        │                       │               │   (Realtime)    │
-        │                       │               └─────────────────┘
-        │                       │                       
-        │                       ▼                       
-        │               ┌─────────────────┐            
-        │               │   Egress API    │────────────┐
-        │               │   (Gravação)    │            │
-        │               └─────────────────┘            │
-        │                                              ▼
-        ▼                                      ┌─────────────────┐
-┌─────────────────┐                            │    AWS S3       │
-│   PHP Backend   │                            │   (Gravações)   │
-│   (Zend)        │                            └─────────────────┘
-└─────────────────┘
-        │
-        ▼
-┌─────────────────┐
-│   PostgreSQL    │
-│   (roleplay.*)  │
-└─────────────────┘
+s3://seu-bucket/
+└── roleplays/
+    └── recordings/
+        └── {customer_id}/
+            └── {session_id}_{timestamp}.mp4
 ```
 
-### Fluxo de Áudio com BVC
+### Fluxo
 
-```
-[Usuário fala no microfone]
-           │
-           ▼
-[WebRTC do Navegador]     ← Echo cancellation, gain control
-           │
-           ▼
-[LiveKit Cloud]
-           │
-           ▼
-[🔇 BVC no Agent]         ← Remove vozes secundárias + ruídos fortes
-           │
-           ▼
-[OpenAI Realtime API]     ← Processa apenas a voz isolada
-           │
-           ▼
-[Resposta da IA]
-```
+1. Usuario clica "Iniciar Chamada"
+2. Agent recebe `start_simulation` via DataChannel
+3. Gravacao inicia via LiveKit Egress API
+4. Saudacao e falada
+5. Conversa acontece normalmente
+6. Simulacao encerra (usuario ou IA)
+7. Gravacao e finalizada e enviada ao S3
+8. URL do arquivo e incluida na avaliacao
 
 ---
 
-## 🤝 Integração com Copiloto
+## Logs (emojis)
 
-Este agente faz parte do módulo **Roleplays** da plataforma Copiloto, integrando-se com:
-
-- **Backend PHP** (Zend Framework 1.12)
-- **PostgreSQL** (schema `roleplay`)
-- **Frontend** (Bootstrap 5 + LiveKit Client SDK)
-- **AWS S3** (armazenamento de gravações)
-
----
-
-## 📄 Licença
-
-Projeto proprietário - Copiloto © 2025
+| Emoji | Significado          |
+|-------|----------------------|
+| 🚀    | Inicializacao        |
+| ✅    | Sucesso              |
+| 📞    | Saudacao             |
+| 👤    | Fala do usuario      |
+| 🤖    | Fala da IA           |
+| 🏁    | Encerramento         |
+| 📊    | Avaliacao            |
+| 🎬    | Gravacao iniciada    |
+| 🛑    | Gravacao parada      |
+| 🔇    | Noise Cancellation   |
+| ⚠️    | Aviso                |
+| ❌    | Erro                 |
